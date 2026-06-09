@@ -1,27 +1,73 @@
 import { useState } from "react";
 import api from "../api";
 
-function SaleModal({ onSave, onClose }) {
+function SaleModal({ products, onSave, onClose }) {
   const [form, setForm] = useState({
-    code: "", client: "", total: 0, payment: "Efectivo", status: "Completada",
+    code: "", client: "", payment: "Efectivo", status: "Completada",
   });
+  const [items, setItems] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  const addItem = () => {
+    if (products.length === 0) return;
+    const available = products.filter(p => !items.find(i => i.product.id === p.id) && p.stock > 0);
+    if (available.length === 0) return;
+    setItems(prev => [...prev, { product: available[0], qty: 1 }]);
+  };
+
+  const updateItem = (idx, field, value) => {
+    setItems(prev => prev.map((item, i) => {
+      if (i !== idx) return item;
+      if (field === "product") {
+        const p = products.find(p => p.id === +value);
+        return { ...item, product: p, qty: 1 };
+      }
+      if (field === "qty") {
+        const qty = Math.max(1, Math.min(+value, item.product.stock));
+        return { ...item, qty };
+      }
+      return item;
+    }));
+  };
+
+  const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx));
+
+  const total = items.reduce((sum, i) => sum + (i.product.price || 0) * i.qty, 0);
+
   const save = async () => {
+    setError("");
+    if (items.length === 0) { setError("Agrega al menos un producto."); return; }
     setSaving(true);
-    await api.post("sales", form);
-    onSave();
+    try {
+      await api.post("sales", { ...form, total });
+      for (const item of items) {
+        const newStock = (item.product.stock || 0) - item.qty;
+        await api.put(`products/${item.product.id}`, { stock: newStock });
+      }
+      onSave();
+    } catch (e) {
+      setError("Error al guardar la venta.");
+    }
     setSaving(false);
   };
 
+  const availableForRow = (idx) =>
+    products.filter(p =>
+      p.stock > 0 &&
+      (!items.find((item, i) => i !== idx && item.product.id === p.id))
+    );
+
   return (
     <div className="overlay" onClick={e => e.target.className === "overlay" && onClose()}>
-      <div className="modal">
+      <div className="modal" style={{ maxWidth: 620 }}>
         <div className="modal-header">
           <div className="modal-title">Nueva venta</div>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
+
         <div className="form-grid">
           <div className="form-group">
             <label>Código</label>
@@ -30,10 +76,6 @@ function SaleModal({ onSave, onClose }) {
           <div className="form-group">
             <label>Cliente</label>
             <input value={form.client} onChange={e => set("client", e.target.value)} placeholder="Nombre del cliente" />
-          </div>
-          <div className="form-group">
-            <label>Total ($)</label>
-            <input type="number" value={form.total} onChange={e => set("total", +e.target.value)} min={0} />
           </div>
           <div className="form-group">
             <label>Método de pago</label>
@@ -52,6 +94,63 @@ function SaleModal({ onSave, onClose }) {
             </select>
           </div>
         </div>
+
+        <div style={{ margin: "16px 0 8px", fontWeight: 600, color: "var(--text)", fontSize: "0.85rem" }}>
+          🌿 PRODUCTOS
+        </div>
+
+        {items.length === 0 && (
+          <div style={{ color: "var(--muted)", fontSize: "0.8rem", marginBottom: 8 }}>
+            Sin productos aún. Agrega uno abajo.
+          </div>
+        )}
+
+        {items.map((item, idx) => (
+          <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <select
+              value={item.product.id}
+              onChange={e => updateItem(idx, "product", e.target.value)}
+              style={{ flex: 2 }}
+            >
+              {availableForRow(idx).map(p => (
+                <option key={p.id} value={p.id}>{p.name} (Stock: {p.stock})</option>
+              ))}
+              <option value={item.product.id}>{item.product.name} (Stock: {item.product.stock})</option>
+            </select>
+            <input
+              type="number"
+              value={item.qty}
+              min={1}
+              max={item.product.stock}
+              onChange={e => updateItem(idx, "qty", e.target.value)}
+              style={{ width: 70 }}
+            />
+            <span style={{ color: "var(--gold)", minWidth: 70, fontSize: "0.85rem" }}>
+              ${((item.product.price || 0) * item.qty).toLocaleString("es-MX")}
+            </span>
+            <button className="btn btn-danger" style={{ padding: "4px 8px" }} onClick={() => removeItem(idx)}>✕</button>
+          </div>
+        ))}
+
+        <button
+          className="btn btn-ghost"
+          style={{ marginTop: 4, fontSize: "0.8rem" }}
+          onClick={addItem}
+          disabled={products.filter(p => p.stock > 0 && !items.find(i => i.product.id === p.id)).length === 0}
+        >
+          + Agregar producto
+        </button>
+
+        <div style={{
+          margin: "16px 0 8px",
+          display: "flex", justifyContent: "flex-end",
+          fontSize: "1rem", fontWeight: 700, color: "var(--gold)"
+        }}>
+          Total: ${total.toLocaleString("es-MX")}
+        </div>
+
+        {error && <div style={{ color: "#f87171", fontSize: "0.8rem", marginBottom: 8 }}>{error}</div>}
+
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="btn btn-primary" onClick={save} disabled={saving}>
@@ -63,7 +162,7 @@ function SaleModal({ onSave, onClose }) {
   );
 }
 
-export default function Sales({ sales, onRefresh }) {
+export default function Sales({ sales, products, onRefresh }) {
   const [modal, setModal] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -142,7 +241,11 @@ export default function Sales({ sales, onRefresh }) {
       </div>
 
       {modal && (
-        <SaleModal onSave={() => { setModal(false); onRefresh(); }} onClose={() => setModal(false)} />
+        <SaleModal
+          products={products || []}
+          onSave={() => { setModal(false); onRefresh(); }}
+          onClose={() => setModal(false)}
+        />
       )}
     </div>
   );
